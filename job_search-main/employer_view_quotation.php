@@ -20,7 +20,17 @@ $jobId = $_GET['job_id'];
 // Query to get quotation details
 $query = "SELECT 
     q.*, 
+    COALESCE(
+        (SELECT n2.price 
+         FROM negotiations n2 
+         WHERE n2.quotation_id = q.quotations_id 
+         ORDER BY n2.created_at DESC 
+         LIMIT 1),
+        q.price
+    ) as current_price,
     q.valid_until,
+    q.jobseeker_approval,
+    q.employer_approval,
     a.proposal,
     a.applicationDate,
     a.status as application_status,
@@ -55,7 +65,6 @@ if (!$quotation) {
 }
 
 // After the existing query, add this new query to get quotation history
-    CONCAT(ui.fname, ' ', ui.lname) as offered_by
 $historyQuery = "SELECT DISTINCT
     n.negotiation_id,
     n.price,
@@ -63,6 +72,7 @@ $historyQuery = "SELECT DISTINCT
     n.valid_until,
     n.status,
     n.created_at,
+    n.created_by,
     CASE 
         WHEN n.created_by = j.employerId THEN CONCAT(ui_emp.fname, ' ', ui_emp.lname)
         ELSE CONCAT(ui_js.fname, ' ', ui_js.lname)
@@ -78,7 +88,6 @@ JOIN jobs j ON a.jobid = j.jobs_id
 LEFT JOIN user_info ui_emp ON j.employerId = ui_emp.userid
 LEFT JOIN user_info ui_js ON a.userId = ui_js.userid
 WHERE q.quotations_id = ?
-GROUP BY n.negotiation_id
 ORDER BY n.created_at DESC";
 
 $historyStmt = $conn->prepare($historyQuery);
@@ -262,7 +271,7 @@ if (!$historyStmt) {
                             <div class="detail-label">Price Details</div>
                             <div class="proposal-text">
                                 <p><strong>Original Job Price:</strong> PHP <?php echo number_format($quotation['job_price'], 2); ?></p>
-                                <p><strong>Quoted/Counter Price:</strong> PHP <?php echo number_format($quotation['price'], 2); ?></p>
+                                <p><strong>Current Quoted Price:</strong> PHP <?php echo number_format($quotation['current_price'], 2); ?></p>
                             </div>
                         </div>
 
@@ -322,12 +331,6 @@ if (!$historyStmt) {
                                                     <strong>Valid Until:</strong> 
                                                     <?php echo date('M j, Y', strtotime($history['valid_until'])); ?>
                                                 </p>
-                                                <p class="mb-1">
-                                                    <strong>Status:</strong> 
-                                                    <span class="status-badge <?php echo strtolower($history['status']); ?>">
-                                                        <?php echo htmlspecialchars($history['status']); ?>
-                                                    </span>
-                                                </p>
                                                 <?php if (!empty($history['description'])): ?>
                                                     <p class="mb-0">
                                                         <strong>Message:</strong><br>
@@ -341,16 +344,44 @@ if (!$historyStmt) {
                             </div>
                         </div>
 
+                        <!-- Add debug info -->
+                        <div class="alert alert-info" style="margin-bottom: 10px;">
+                            Debug Info:
+                            <ul>
+                                <li>Status: "<?php echo $quotation['status']; ?>"</li>
+                                <li>User Type: <?php echo $_SESSION['userType']; ?></li>
+                                <li>Is Pending: <?php echo (strtolower($quotation['status']) === 'pending') ? 'Yes' : 'No'; ?></li>
+                                <li>Is Negotiation: <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Yes' : 'No'; ?></li>
+                                <li>Employer Approval: <?php echo $quotation['employer_approval'] ? 'Yes' : 'No'; ?></li>
+                            </ul>
+                        </div>
+
                         <div class="mt-4 d-flex gap-2">
-                            <button class="btn btn-success btn-sm" onclick="handleQuotation('accept')">
-                                <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Accept Counter Offer' : 'Accept Quotation'; ?>
-                            </button>
-                            <button class="btn btn-warning btn-sm" onclick="showNegotiateModal()">
-                                <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Make Counter Offer' : 'Negotiate'; ?>
-                            </button>
-                            <button class="btn btn-danger btn-sm" onclick="handleQuotation('reject')">
-                                Reject
-                            </button>
+                            <?php if (strtolower($quotation['status']) === 'pending' || strtolower($quotation['status']) === 'negotiation'): ?>
+                                <?php if (!$quotation['employer_approval']): ?>
+                                    <button class="btn btn-success btn-sm" onclick="handleQuotation('accept')">
+                                        Accept Quotation
+                                    </button>
+                                <?php else: ?>
+                                    <div class="alert alert-info">
+                                        Waiting for jobseeker's approval
+                                    </div>
+                                <?php endif; ?>
+                                <button class="btn btn-warning btn-sm" onclick="showNegotiateModal()">
+                                    Negotiate
+                                </button>
+                                <button class="btn btn-danger btn-sm" onclick="handleQuotation('reject')">
+                                    Reject
+                                </button>
+                            <?php elseif (strtolower($quotation['status']) === 'accepted'): ?>
+                                <div class="alert alert-success">
+                                    This quotation has been accepted by both parties.
+                                </div>
+                            <?php elseif (strtolower($quotation['status']) === 'rejected'): ?>
+                                <div class="alert alert-danger">
+                                    This quotation has been rejected.
+                                </div>
+                            <?php endif; ?>
                         </div>
                     </div>
                 </div>
@@ -425,10 +456,6 @@ if (!$historyStmt) {
         }
 
         function submitCounterOffer() {
-            // Add authorization check
-            const userType = '<?php echo $_SESSION['userType']; ?>';
-            const userId = '<?php echo $_SESSION['user_id']; ?>';
-            
             const amount = document.getElementById('counterOfferAmount').value;
             const description = document.getElementById('counterOfferDescription').value;
             const validUntil = document.getElementById('counterOfferValidUntil').value;
@@ -443,13 +470,39 @@ if (!$historyStmt) {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                 },
-                body: `quotationId=<?php echo $quotationId; ?>&applicationId=<?php echo $quotation['applications_id']; ?>&jobId=<?php echo $jobId; ?>&price=${amount}&description=${encodeURIComponent(description)}&validUntil=${validUntil}&update=true&userType=${userType}&userId=${userId}`
+                body: `quotationId=<?php echo $quotationId; ?>&applicationId=<?php echo $quotation['applications_id']; ?>&jobId=<?php echo $jobId; ?>&price=${amount}&description=${encodeURIComponent(description)}&validUntil=${validUntil}&update=true&userType=<?php echo $_SESSION['userType']; ?>&userId=<?php echo $_SESSION['user_id']; ?>`
             })
             .then(response => response.text())
             .then(data => {
                 if (data.includes('success')) {
-                    alert('Counter offer updated successfully!');
-                    window.location.reload(); // Reload the page to show updated history
+                    alert('Counter offer sent successfully!');
+                    // Close the modal first
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('negotiateModal'));
+                    modal.hide();
+                    
+                    // Reload only the necessary parts
+                    fetch(window.location.href)
+                        .then(response => response.text())
+                        .then(html => {
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(html, 'text/html');
+                            
+                            // Update negotiation history
+                            document.querySelector('.negotiation-history').innerHTML = 
+                                doc.querySelector('.negotiation-history').innerHTML;
+                            
+                            // Update current price
+                            document.querySelector('.detail-label + div:contains("Current Quoted Price")').innerHTML = 
+                                doc.querySelector('.detail-label + div:contains("Current Quoted Price")').innerHTML;
+                            
+                            // Update status badge
+                            document.querySelector('.status-badge').outerHTML = 
+                                doc.querySelector('.status-badge').outerHTML;
+                            
+                            // Ensure buttons are still visible
+                            document.querySelector('.mt-4.d-flex.gap-2').innerHTML = 
+                                doc.querySelector('.mt-4.d-flex.gap-2').innerHTML;
+                        });
                 } else {
                     alert(data);
                 }
