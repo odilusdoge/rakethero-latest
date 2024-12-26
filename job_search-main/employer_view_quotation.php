@@ -55,25 +55,38 @@ if (!$quotation) {
 }
 
 // After the existing query, add this new query to get quotation history
-$historyQuery = "SELECT 
-    q.price as offered_price,
-    q.description,
-    q.status,
-    q.valid_until,
-    q.DateCreated as created_at,
     CONCAT(ui.fname, ' ', ui.lname) as offered_by
-FROM quotations q
+$historyQuery = "SELECT DISTINCT
+    n.negotiation_id,
+    n.price,
+    n.description,
+    n.valid_until,
+    n.status,
+    n.created_at,
+    CASE 
+        WHEN n.created_by = j.employerId THEN CONCAT(ui_emp.fname, ' ', ui_emp.lname)
+        ELSE CONCAT(ui_js.fname, ' ', ui_js.lname)
+    END as offered_by,
+    CASE 
+        WHEN n.created_by = j.employerId THEN 'Employer'
+        ELSE 'Jobseeker'
+    END as user_type
+FROM negotiations n
+JOIN quotations q ON n.quotation_id = q.quotations_id
 JOIN applications a ON q.applications_id = a.applications_id
-LEFT JOIN user_info ui ON a.userId = ui.userid
-WHERE q.applications_id = ?
-ORDER BY q.DateCreated DESC";
+JOIN jobs j ON a.jobid = j.jobs_id
+LEFT JOIN user_info ui_emp ON j.employerId = ui_emp.userid
+LEFT JOIN user_info ui_js ON a.userId = ui_js.userid
+WHERE q.quotations_id = ?
+GROUP BY n.negotiation_id
+ORDER BY n.created_at DESC";
 
 $historyStmt = $conn->prepare($historyQuery);
 if (!$historyStmt) {
     error_log("Query preparation failed: " . $conn->error);
     $quotationHistory = array();
 } else {
-    $historyStmt->bind_param("i", $quotation['applications_id']);
+    $historyStmt->bind_param("i", $quotationId);
     if (!$historyStmt->execute()) {
         error_log("Query execution failed: " . $historyStmt->error);
         $quotationHistory = array();
@@ -178,6 +191,32 @@ if (!$historyStmt) {
         .quotation-history .table th {
             background-color: #f1f1f1;
         }
+
+        .negotiation-history {
+            margin-top: 10px;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 8px;
+        }
+
+        .negotiation-item {
+            border-radius: 5px;
+            transition: all 0.3s ease;
+        }
+
+        .negotiation-item:hover {
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .status-badge.negotiation {
+            background-color: #cce5ff;
+            color: #004085;
+        }
+
+        .negotiation-item .status-badge {
+            font-size: 0.75rem;
+            padding: 4px 8px;
+        }
     </style>
 </head>
 <body>
@@ -257,25 +296,44 @@ if (!$historyStmt) {
 
                         <div class="detail-row">
                             <div class="detail-label">Negotiation History</div>
-                            <div class="proposal-text">
+                            <div class="negotiation-history">
                                 <?php if (empty($quotationHistory)): ?>
-                                    <p>No previous negotiations.</p>
+                                    <p class="text-muted">No previous negotiations.</p>
                                 <?php else: ?>
                                     <?php foreach ($quotationHistory as $history): ?>
                                         <div class="negotiation-item mb-3 p-3" style="border-left: 3px solid #007bff; background-color: #f8f9fa;">
-                                            <div class="d-flex justify-content-between">
-                                                <strong><?php echo htmlspecialchars($history['offered_by']); ?></strong>
-                                                <small><?php echo date('M j, Y g:i A', strtotime($history['created_at'])); ?></small>
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <strong>
+                                                    <?php 
+                                                        echo htmlspecialchars($history['offered_by'] ?: 'Unknown User');
+                                                        echo ' (' . htmlspecialchars($history['user_type']) . ')';
+                                                    ?>
+                                                </strong>
+                                                <small class="text-muted">
+                                                    <?php echo date('M j, Y g:i A', strtotime($history['created_at'])); ?>
+                                                </small>
                                             </div>
                                             <div class="mt-2">
-                                                <p class="mb-1"><strong>Offered Price:</strong> PHP <?php echo number_format($history['offered_price'], 2); ?></p>
-                                                <p class="mb-1"><strong>Valid Until:</strong> <?php echo date('M j, Y', strtotime($history['valid_until'])); ?></p>
-                                                <p class="mb-1"><strong>Status:</strong> 
+                                                <p class="mb-1">
+                                                    <strong>Offered Price:</strong> 
+                                                    PHP <?php echo number_format($history['price'], 2); ?>
+                                                </p>
+                                                <p class="mb-1">
+                                                    <strong>Valid Until:</strong> 
+                                                    <?php echo date('M j, Y', strtotime($history['valid_until'])); ?>
+                                                </p>
+                                                <p class="mb-1">
+                                                    <strong>Status:</strong> 
                                                     <span class="status-badge <?php echo strtolower($history['status']); ?>">
                                                         <?php echo htmlspecialchars($history['status']); ?>
                                                     </span>
                                                 </p>
-                                                <p class="mb-0"><strong>Message:</strong><br><?php echo nl2br(htmlspecialchars($history['description'])); ?></p>
+                                                <?php if (!empty($history['description'])): ?>
+                                                    <p class="mb-0">
+                                                        <strong>Message:</strong><br>
+                                                        <?php echo nl2br(htmlspecialchars($history['description'])); ?>
+                                                    </p>
+                                                <?php endif; ?>
                                             </div>
                                         </div>
                                     <?php endforeach; ?>

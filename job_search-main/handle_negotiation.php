@@ -99,30 +99,44 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // After getting the quotation
         error_log("Quotation found: " . print_r($quotation, true));
 
-        // Update the existing quotation
-        $updateQuery = "UPDATE quotations 
-                       SET price = ?,
-                           description = ?,
-                           valid_until = ?,
-                           status = 'Negotiation'
-                       WHERE quotations_id = ?";
+        // Instead of updating, always insert a new negotiation
+        $insertQuery = "INSERT INTO negotiations (
+            quotation_id,
+            employer_id,
+            jobseeker_id,
+            price,
+            description,
+            valid_until,
+            status,
+            created_at,
+            created_by
+        ) SELECT 
+            ?,
+            j.employerId,
+            a.userId,
+            ?,
+            ?,
+            ?,
+            'Pending',
+            NOW(),
+            ?
+        FROM quotations q
+        JOIN applications a ON q.applications_id = a.applications_id
+        JOIN jobs j ON a.jobid = j.jobs_id
+        WHERE q.quotations_id = ?";
 
-        // Before preparing the update query
-        error_log("Update Query: " . $updateQuery);
-
-        $stmt = $conn->prepare($updateQuery);
-        if (!$stmt) {
-            throw new Exception("Error preparing updateQuery statement: " . $conn->error);
-        }
-        $stmt->bind_param("dssi", 
-            $price, 
-            $description, 
+        $stmt = $conn->prepare($insertQuery);
+        $stmt->bind_param("idssii", 
+            $quotation['quotations_id'],
+            $price,
+            $description,
             $validUntil,
+            $userId,
             $quotation['quotations_id']
         );
 
         if (!$stmt->execute()) {
-            throw new Exception("Failed to update quotation");
+            throw new Exception("Failed to insert negotiation");
         }
 
         // Update application status

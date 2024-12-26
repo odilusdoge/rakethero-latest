@@ -89,6 +89,22 @@ try {
             $stmt->bind_param("i", $quotationId);
             $stmt->execute();
 
+            // Add this new query to update the negotiation status
+            $updateNegotiationQuery = "UPDATE negotiations n
+                JOIN quotations q ON n.quotation_id = q.quotations_id
+                SET n.status = 'Accepted'
+                WHERE q.quotations_id = ?";
+            
+            $negotiationStmt = $conn->prepare($updateNegotiationQuery);
+            if (!$negotiationStmt) {
+                throw new Exception("Error preparing negotiation update statement");
+            }
+            
+            $negotiationStmt->bind_param("i", $quotationId);
+            if (!$negotiationStmt->execute()) {
+                throw new Exception("Error updating negotiation status");
+            }
+
             // Commit transaction
             $conn->commit();
 

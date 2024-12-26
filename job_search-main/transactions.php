@@ -235,7 +235,7 @@ error_log("Number of rows returned: " . $result->num_rows);
                             </div>
 
                             <div class="mt-3">
-                                <button class="btn btn-info" onclick="viewQuotationHistory(<?php echo $transaction['jobId']; ?>, '<?php echo htmlspecialchars($transaction['job_title']); ?>')">
+                                <button class="btn btn-info btn-sm" onclick="viewQuotationHistory(<?php echo $transaction['jobId']; ?>, '<?php echo htmlspecialchars($transaction['job_title']); ?>')">
                                     <i class="bi bi-clock-history"></i> View Quotation History
                                 </button>
                             </div>
@@ -362,12 +362,12 @@ error_log("Number of rows returned: " . $result->num_rows);
                                 <table class="table table-hover">
                                     <thead>
                                         <tr>
-                                            <th>Date</th>
+                                            <th>Date & Time</th>
                                             <th>From</th>
                                             <th>Amount</th>
-                                            <th>Type</th>
+                                            <th>Message</th>
                                             <th>Status</th>
-                                            <th>Description</th>
+                                            <th>Validity</th>
                                         </tr>
                                     </thead>
                                     <tbody id="quotationHistoryBody">
@@ -489,18 +489,15 @@ error_log("Number of rows returned: " . $result->num_rows);
     }
 
     function viewQuotationHistory(jobId, jobTitle) {
-        // Update modal title
         document.getElementById('quotationJobTitle').textContent = jobTitle;
         
-        // Show loading state
         const tbody = document.getElementById('quotationHistoryBody');
         tbody.innerHTML = '<tr><td colspan="6" class="text-center">Loading...</td></tr>';
         
-        // Fetch quotation history
         fetch('get_quotation_history.php?jobId=' + jobId)
             .then(response => response.json())
             .then(response => {
-                tbody.innerHTML = ''; // Clear loading state
+                tbody.innerHTML = '';
                 
                 if (response.error) {
                     throw new Error(response.message || 'Error loading quotation history');
@@ -516,36 +513,30 @@ error_log("Number of rows returned: " . $result->num_rows);
                 data.forEach(quote => {
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td>${new Date(quote.DateCreated).toLocaleDateString()}</td>
-                        <td>${quote.from_name}</td>
+                        <td>${new Date(quote.created_at).toLocaleDateString()} ${new Date(quote.created_at).toLocaleTimeString()}</td>
+                        <td>${quote.offered_by} (${quote.user_type})</td>
                         <td>PHP ${parseFloat(quote.price).toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
-                        <td>
-                            <span class="badge bg-${quote.quote_type === 'Counter Offer' ? 'warning' : 'info'}">
-                                ${quote.quote_type}
-                            </span>
-                        </td>
+                        <td>${quote.description}</td>
                         <td>
                             <span class="badge bg-${
-                                quote.status === 'accepted' ? 'success' :
-                                quote.status === 'rejected' ? 'danger' :
-                                quote.status === 'negotiation' ? 'warning' : 'secondary'
+                                quote.status === 'Accepted' ? 'success' :
+                                quote.status === 'Rejected' ? 'danger' :
+                                quote.status === 'Pending' ? 'warning' : 'secondary'
                             }">
                                 ${quote.status.charAt(0).toUpperCase() + quote.status.slice(1)}
                             </span>
                         </td>
-                        <td>${quote.description}</td>
+                        <td>Valid until: ${new Date(quote.valid_until).toLocaleDateString()}</td>
                     `;
                     tbody.appendChild(row);
                 });
                 
-                // Show the modal
                 const modal = new bootstrap.Modal(document.getElementById('quotationHistoryModal'));
                 modal.show();
             })
             .catch(error => {
                 console.error('Error:', error);
                 alert(error.message || 'Error loading quotation history');
-                // Close the modal if it's open
                 const modal = bootstrap.Modal.getInstance(document.getElementById('quotationHistoryModal'));
                 if (modal) {
                     modal.hide();

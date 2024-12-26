@@ -97,34 +97,38 @@ error_log("Debug - User Type: " . $userType);
 error_log("Debug - Is Employer: " . ($isEmployer ? 'true' : 'false'));
 error_log("Debug - Quotation Status: " . $quotation['status']);
 
-// Add this after the existing query that gets quotation details (around line 50)
+// Replace the existing history query with this version
 $historyQuery = "SELECT DISTINCT
-    q.quotations_id,
-    q.price as offered_price,
-    q.description,
-    q.status,
-    q.valid_until,
-    q.DateCreated as created_at,
-    CONCAT(ui2.fname, ' ', ui2.lname) as offered_by
-FROM quotations q
+    n.negotiation_id,
+    n.price,
+    n.description,
+    n.valid_until,
+    n.status,
+    n.created_at,
+    CASE 
+        WHEN n.created_by = j.employerId THEN CONCAT(ui_emp.fname, ' ', ui_emp.lname)
+        ELSE CONCAT(ui_js.fname, ' ', ui_js.lname)
+    END as offered_by,
+    CASE 
+        WHEN n.created_by = j.employerId THEN 'Employer'
+        ELSE 'Jobseeker'
+    END as user_type
+FROM negotiations n
+JOIN quotations q ON n.quotation_id = q.quotations_id
 JOIN applications a ON q.applications_id = a.applications_id
 JOIN jobs j ON a.jobid = j.jobs_id
-LEFT JOIN user_info ui2 ON (
-    CASE 
-        WHEN j.employerId = q.created_by THEN j.employerId
-        ELSE a.userId
-    END = ui2.userid
-)
-WHERE q.applications_id = ?
-GROUP BY q.quotations_id
-ORDER BY q.DateCreated DESC";
+LEFT JOIN user_info ui_emp ON j.employerId = ui_emp.userid
+LEFT JOIN user_info ui_js ON a.userId = ui_js.userid
+WHERE q.quotations_id = ?
+GROUP BY n.negotiation_id
+ORDER BY n.created_at DESC";
 
 $historyStmt = $conn->prepare($historyQuery);
 if (!$historyStmt) {
     error_log("Query preparation failed: " . $conn->error);
     $quotationHistory = array();
 } else {
-    $historyStmt->bind_param("i", $quotation['applications_id']);
+    $historyStmt->bind_param("i", $quotationId);
     if (!$historyStmt->execute()) {
         error_log("Query execution failed: " . $historyStmt->error);
         $quotationHistory = array();
@@ -388,7 +392,12 @@ if (!$historyStmt) {
                                     <?php foreach ($quotationHistory as $history): ?>
                                         <div class="negotiation-item mb-3 p-3" style="border-left: 3px solid #007bff; background-color: #f8f9fa;">
                                             <div class="d-flex justify-content-between align-items-center">
-                                                <strong><?php echo htmlspecialchars($history['offered_by'] ?: 'Unknown User'); ?></strong>
+                                                <strong>
+                                                    <?php 
+                                                        echo htmlspecialchars($history['offered_by'] ?: 'Unknown User');
+                                                        echo ' (' . htmlspecialchars($history['user_type']) . ')';
+                                                    ?>
+                                                </strong>
                                                 <small class="text-muted">
                                                     <?php echo date('M j, Y g:i A', strtotime($history['created_at'])); ?>
                                                 </small>
@@ -396,7 +405,7 @@ if (!$historyStmt) {
                                             <div class="mt-2">
                                                 <p class="mb-1">
                                                     <strong>Offered Price:</strong> 
-                                                    PHP <?php echo number_format($history['offered_price'], 2); ?>
+                                                    PHP <?php echo number_format($history['price'], 2); ?>
                                                 </p>
                                                 <p class="mb-1">
                                                     <strong>Valid Until:</strong> 
