@@ -70,9 +70,8 @@ ORDER BY q.DateCreated DESC";
 
 $historyStmt = $conn->prepare($historyQuery);
 if (!$historyStmt) {
-    // Add error handling
     error_log("Query preparation failed: " . $conn->error);
-    $quotationHistory = array(); // Set empty array as fallback
+    $quotationHistory = array();
 } else {
     $historyStmt->bind_param("i", $quotation['applications_id']);
     if (!$historyStmt->execute()) {

@@ -98,7 +98,8 @@ error_log("Debug - Is Employer: " . ($isEmployer ? 'true' : 'false'));
 error_log("Debug - Quotation Status: " . $quotation['status']);
 
 // Add this after the existing query that gets quotation details (around line 50)
-$historyQuery = "SELECT 
+$historyQuery = "SELECT DISTINCT
+    q.quotations_id,
     q.price as offered_price,
     q.description,
     q.status,
@@ -108,30 +109,28 @@ $historyQuery = "SELECT
 FROM quotations q
 JOIN applications a ON q.applications_id = a.applications_id
 JOIN jobs j ON a.jobid = j.jobs_id
-LEFT JOIN user_info ui2 ON j.employerId = ui2.userid
-WHERE q.applications_id = ? 
-AND (
-    (? = 'jobseeker' AND a.userId = ?) 
-    OR 
-    (? = 'employer' AND j.employerId = ?)
+LEFT JOIN user_info ui2 ON (
+    CASE 
+        WHEN j.employerId = q.created_by THEN j.employerId
+        ELSE a.userId
+    END = ui2.userid
 )
+WHERE q.applications_id = ?
+GROUP BY q.quotations_id
 ORDER BY q.DateCreated DESC";
 
 $historyStmt = $conn->prepare($historyQuery);
 if (!$historyStmt) {
-    // Add error handling
     error_log("Query preparation failed: " . $conn->error);
-    $quotationHistory = array(); // Set empty array as fallback
+    $quotationHistory = array();
 } else {
-    $historyStmt->bind_param("isisis", 
-        $quotation['applications_id'], 
-        $userType, 
-        $_SESSION['user_id'], 
-        $userType, 
-        $_SESSION['user_id']
-    );
-    $historyStmt->execute();
-    $quotationHistory = $historyStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $historyStmt->bind_param("i", $quotation['applications_id']);
+    if (!$historyStmt->execute()) {
+        error_log("Query execution failed: " . $historyStmt->error);
+        $quotationHistory = array();
+    } else {
+        $quotationHistory = $historyStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    }
 }
 ?>
 
@@ -260,6 +259,32 @@ if (!$historyStmt) {
         .negotiation-item small {
             color: #6c757d;
         }
+
+        .negotiation-history {
+            margin-top: 10px;
+            padding: 15px;
+            background-color: #fff;
+            border-radius: 8px;
+        }
+
+        .negotiation-item {
+            border-radius: 5px;
+            transition: all 0.3s ease;
+        }
+
+        .negotiation-item:hover {
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .status-badge.negotiation {
+            background-color: #cce5ff;
+            color: #004085;
+        }
+
+        .negotiation-item .status-badge {
+            font-size: 0.75rem;
+            padding: 4px 8px;
+        }
     </style>
 </head>
 <body>
@@ -351,6 +376,48 @@ if (!$historyStmt) {
                             <div class="detail-label">Quotation Description</div>
                             <div class="proposal-text p-3 bg-light rounded">
                                 <?php echo nl2br(htmlspecialchars($quotation['description'])); ?>
+                            </div>
+                        </div>
+
+                        <div class="detail-row">
+                            <div class="detail-label">Negotiation History</div>
+                            <div class="negotiation-history">
+                                <?php if (empty($quotationHistory)): ?>
+                                    <p class="text-muted">No previous negotiations.</p>
+                                <?php else: ?>
+                                    <?php foreach ($quotationHistory as $history): ?>
+                                        <div class="negotiation-item mb-3 p-3" style="border-left: 3px solid #007bff; background-color: #f8f9fa;">
+                                            <div class="d-flex justify-content-between align-items-center">
+                                                <strong><?php echo htmlspecialchars($history['offered_by'] ?: 'Unknown User'); ?></strong>
+                                                <small class="text-muted">
+                                                    <?php echo date('M j, Y g:i A', strtotime($history['created_at'])); ?>
+                                                </small>
+                                            </div>
+                                            <div class="mt-2">
+                                                <p class="mb-1">
+                                                    <strong>Offered Price:</strong> 
+                                                    PHP <?php echo number_format($history['offered_price'], 2); ?>
+                                                </p>
+                                                <p class="mb-1">
+                                                    <strong>Valid Until:</strong> 
+                                                    <?php echo date('M j, Y', strtotime($history['valid_until'])); ?>
+                                                </p>
+                                                <p class="mb-1">
+                                                    <strong>Status:</strong> 
+                                                    <span class="status-badge <?php echo strtolower($history['status']); ?>">
+                                                        <?php echo htmlspecialchars($history['status']); ?>
+                                                    </span>
+                                                </p>
+                                                <?php if (!empty($history['description'])): ?>
+                                                    <p class="mb-0">
+                                                        <strong>Message:</strong><br>
+                                                        <?php echo nl2br(htmlspecialchars($history['description'])); ?>
+                                                    </p>
+                                                <?php endif; ?>
+                                            </div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
                             </div>
                         </div>
                     </div>

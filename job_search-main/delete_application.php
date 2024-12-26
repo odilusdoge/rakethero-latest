@@ -26,7 +26,7 @@ try {
 
     error_log("Attempting to delete application ID: $applicationId for user ID: $userId");
 
-    // First check if the application exists and belongs to the user
+    // First check if the application exists and belongs to the users
     $check_query = "SELECT applications_id, jobid FROM applications WHERE applications_id = ? AND userid = ?";
     $stmt = $conn->prepare($check_query);
     if (!$stmt) {
