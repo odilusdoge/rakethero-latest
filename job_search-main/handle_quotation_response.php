@@ -12,9 +12,16 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 $quotationId = $_POST['quotationId'] ?? null;
 $action = $_POST['action'] ?? null;
 $jobId = $_POST['jobId'] ?? null;
+$userType = $_POST['userType'] ?? ''; // Get from POST data
 
 if (!$quotationId || !$action) {
     echo json_encode(['success' => false, 'message' => 'Missing required parameters']);
+    exit;
+}
+
+// Validate user type
+if (!in_array($userType, ['employer', 'jobseeker'])) {
+    echo json_encode(['success' => false, 'message' => 'Invalid user type']);
     exit;
 }
 
@@ -25,105 +32,102 @@ try {
         throw new Exception("Connection failed: " . $conn->connect_error);
     }
 
+    $conn->begin_transaction();
+
     if ($action === 'accept') {
-        // Start transaction
-        $conn->begin_transaction();
+        // Initialize the query variable
+        $updateQuotationQuery = "";
         
-        try {
-            // Update quotation status
-            $updateQuotationQuery = "UPDATE quotations SET status = 'Accepted' WHERE quotations_id = ?";
-            $stmt = $conn->prepare($updateQuotationQuery);
-            $stmt->bind_param("i", $quotationId);
-            $stmt->execute();
+        // Update the quotation based on user type
+        if ($userType === 'jobseeker') {
+            $updateQuotationQuery = "UPDATE quotations 
+                                   SET jobseeker_approval = 1 
+                                   WHERE quotations_id = ?";
+        } else if ($userType === 'employer') {
+            $updateQuotationQuery = "UPDATE quotations 
+                                   SET employer_approval = 1 
+                                   WHERE quotations_id = ?";
+        }
 
-            // Get necessary information for transaction
-            $getInfoQuery = "SELECT 
-                q.price as amount,
-                j.employerId,
-                j.jobs_id,
-                j.duration,
-                a.userid as jobseeker_id
-            FROM quotations q
-            JOIN applications a ON q.applications_id = a.applications_id
-            JOIN jobs j ON a.jobid = j.jobs_id
-            WHERE q.quotations_id = ?";
-            
-            $stmt = $conn->prepare($getInfoQuery);
-            $stmt->bind_param("i", $quotationId);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $info = $result->fetch_assoc();
+        // Check if query is defined
+        if (empty($updateQuotationQuery)) {
+            throw new Exception("Invalid user type for approval");
+        }
 
-            // Insert into transactions
-            $insertTransactionQuery = "INSERT INTO transactions 
-                (employerId, jobId, jobseeker_id, quotation_id, amount, duration, status, transaction_date) 
-            VALUES (?, ?, ?, ?, ?, ?, 'Active', NOW())";
-            
-            $stmt = $conn->prepare($insertTransactionQuery);
-            $stmt->bind_param("iiiiis", 
-                $info['employerId'],
-                $info['jobs_id'],
-                $info['jobseeker_id'],
-                $quotationId,
-                $info['amount'],
-                $info['duration']
-            );
+        $stmt = $conn->prepare($updateQuotationQuery);
+        $stmt->bind_param("i", $quotationId);
+        $stmt->execute();
+
+        // Check if both parties have approved
+        $checkApprovalsQuery = "SELECT jobseeker_approval, employer_approval 
+                              FROM quotations 
+                              WHERE quotations_id = ?";
+        $stmt = $conn->prepare($checkApprovalsQuery);
+        $stmt->bind_param("i", $quotationId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $approvals = $result->fetch_assoc();
+
+        if ($approvals['jobseeker_approval'] == 1 && $approvals['employer_approval'] == 1) {
+            // Both parties have approved - finalize the quotation
+            $finalizeQuery = "UPDATE quotations 
+                            SET status = 'accepted' 
+                            WHERE quotations_id = ?";
+            $stmt = $conn->prepare($finalizeQuery);
+            $stmt->bind_param("i", $quotationId);
             $stmt->execute();
 
             // Update application status
             $updateApplicationQuery = "UPDATE applications a 
-                JOIN quotations q ON a.applications_id = q.applications_id 
-                SET a.status = 'Completed' 
-                WHERE q.quotations_id = ?";
+                                    JOIN quotations q ON a.applications_id = q.applications_id 
+                                    SET a.status = 'accepted' 
+                                    WHERE q.quotations_id = ?";
             $stmt = $conn->prepare($updateApplicationQuery);
             $stmt->bind_param("i", $quotationId);
             $stmt->execute();
 
-            // Update job status to closed
+            // Update job status
             $updateJobQuery = "UPDATE jobs j 
-                JOIN applications a ON j.jobs_id = a.jobid 
-                JOIN quotations q ON a.applications_id = q.applications_id 
-                SET j.status = 'Closed' 
-                WHERE q.quotations_id = ?";
+                             JOIN applications a ON j.jobs_id = a.jobid 
+                             JOIN quotations q ON a.applications_id = q.applications_id 
+                             SET j.status = 'Closed' 
+                             WHERE q.quotations_id = ?";
             $stmt = $conn->prepare($updateJobQuery);
             $stmt->bind_param("i", $quotationId);
             $stmt->execute();
 
-            // Add this new query to update the negotiation status
-            $updateNegotiationQuery = "UPDATE negotiations n
-                JOIN quotations q ON n.quotation_id = q.quotations_id
-                SET n.status = 'Accepted'
-                WHERE q.quotations_id = ?";
-            
-            $negotiationStmt = $conn->prepare($updateNegotiationQuery);
-            if (!$negotiationStmt) {
-                throw new Exception("Error preparing negotiation update statement");
-            }
-            
-            $negotiationStmt->bind_param("i", $quotationId);
-            if (!$negotiationStmt->execute()) {
-                throw new Exception("Error updating negotiation status");
-            }
-
-            // Commit transaction
-            $conn->commit();
-
-            $response = array('success' => true, 'message' => 'Quotation accepted successfully');
-            echo json_encode($response);
-        } catch (Exception $e) {
-            // Rollback transaction on error
-            $conn->rollback();
-            $response = array('success' => false, 'message' => 'Error: ' . $e->getMessage());
-            echo json_encode($response);
+            $message = "Both parties have accepted the quotation. The job has been finalized.";
+        } else {
+            $message = "Your acceptance has been recorded. Waiting for the other party's approval.";
         }
-    } else if ($action === 'reject') {
-        // ... existing reject logic ...
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Invalid action']);
-    }
 
+        $conn->commit();
+        echo json_encode(['success' => true, 'message' => $message]);
+    } else if ($action === 'reject') {
+        // Update quotation status
+        $updateQuotationQuery = "UPDATE quotations 
+                               SET status = 'rejected' 
+                               WHERE quotations_id = ?";
+        $stmt = $conn->prepare($updateQuotationQuery);
+        $stmt->bind_param("i", $quotationId);
+        $stmt->execute();
+
+        // Update application status
+        $updateApplicationQuery = "UPDATE applications a 
+                                JOIN quotations q ON a.applications_id = q.applications_id 
+                                SET a.status = 'rejected' 
+                                WHERE q.quotations_id = ?";
+        $stmt = $conn->prepare($updateApplicationQuery);
+        $stmt->bind_param("i", $quotationId);
+        $stmt->execute();
+
+        $conn->commit();
+        echo json_encode(['success' => true, 'message' => "Quotation has been rejected."]);
+    } else {
+        throw new Exception('Invalid action');
+    }
 } catch (Exception $e) {
-    error_log("Error in handle_quotation_response.php: " . $e->getMessage());
+    $conn->rollback();
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);
 } finally {
     if (isset($conn)) {

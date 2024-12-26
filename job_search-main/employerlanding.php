@@ -253,14 +253,18 @@ $result = $stmt->get_result();
 $userType = $result->fetch_assoc()['userType'];  // 'employer' or 'jobseeker'
 $stmt->close();
 
-// Update the applications query to prevent duplicates
+// Update the applications query
 $applicationsQuery = "SELECT DISTINCT
     a.applications_id,
     a.jobId,
     a.userId,
     a.proposal,
     a.applicationDate,
-    a.status as app_status,
+    CASE 
+        WHEN a.status IS NULL THEN 'Pending'
+        WHEN a.status = '' THEN 'Pending'
+        ELSE a.status 
+    END as status,
     j.title,
     j.description,
     j.status as job_status,
@@ -293,8 +297,8 @@ WHERE j.employerId = ?
         WHERE q3.applications_id = a.applications_id 
         AND q3.status = 'Accepted'
     )
-    AND a.status != 'Completed'
-GROUP BY a.applications_id  /* Add GROUP BY to prevent duplicates */
+    AND (a.status IS NULL OR a.status != 'Completed')
+GROUP BY a.applications_id
 ORDER BY a.applicationDate DESC";
 
 // Prepare and execute
@@ -316,7 +320,7 @@ while ($row = $applications->fetch_assoc()) {
         'jobId' => $row['jobId'],
         'title' => htmlspecialchars($row['title']),
         'description' => htmlspecialchars($row['description']),
-        'status' => $row['app_status'],
+        'status' => $row['status'],
         'quotation_status' => $row['quotation_status'],
         'valid_until' => $row['valid_until']
     );
@@ -950,8 +954,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
                                             <div>
                                                 <h5 class="mb-1"><?php echo htmlspecialchars($application['title']); ?></h5>
                                                 <div class="d-flex align-items-center gap-2">
-                                                    <span class="status-badge <?php echo strtolower($application['app_status']); ?>">
-                                                        <?php echo htmlspecialchars($application['app_status']); ?>
+                                                    <span class="status-badge <?php echo strtolower($application['status']); ?>">
+                                                        <?php echo htmlspecialchars($application['status']); ?>
                                                     </span>
                                                     <span class="text-muted">•</span>
                                                     <span class="text-muted">Applied on <?php echo date('M j, Y', strtotime($application['applicationDate'])); ?></span>
@@ -998,24 +1002,39 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
                                             </div>
                                         <?php endif; ?>
 
-                                        <div class="button-container">
-                                            <?php if (!isset($application['quotations_id'])): ?>
-                                                <button class="btn btn-primary btn-sm" onclick="sendQuotation(
-                                                    '<?php echo htmlspecialchars($application['applications_id']); ?>',
-                                                    '<?php echo htmlspecialchars($application['title']); ?>',
-                                                    '<?php echo htmlspecialchars($application['jobs_id']); ?>'
-                                                )">Send Quotation</button>
-                                                <button class="btn btn-danger btn-sm" onclick="rejectApplication(
-                                                    '<?php echo htmlspecialchars($application['applications_id']); ?>'
-                                                )">Reject Application</button>
-                                            <?php else: ?>
-                                                <button class="btn btn-info btn-sm" onclick="viewQuotation({
-                                                    quotationId: '<?php echo $application['quotations_id']; ?>', 
-                                                    jobId: '<?php echo $application['jobs_id']; ?>'
-                                                })">View Quotation</button>
-                                                <button class="btn btn-danger btn-sm" onclick="rejectProposal(
-                                                    '<?php echo htmlspecialchars($application['applications_id']); ?>'
-                                                )">Reject Proposal</button>
+                                        <div class="action-buttons">
+                                            <?php if (empty($application['status']) || 
+                                                      strtolower($application['status']) == 'pending'): ?>
+                                                <!-- Initial proposal - show Accept/Decline -->
+                                                <button class="btn btn-success btn-sm" 
+                                                        onclick="handleProposal(<?php echo $application['applications_id']; ?>, 'accept')">
+                                                    Accept Proposal
+                                                </button>
+                                                <button class="btn btn-danger btn-sm" 
+                                                        onclick="handleProposal(<?php echo $application['applications_id']; ?>, 'decline')">
+                                                    Decline Proposal
+                                                </button>
+                                            <?php elseif (strtolower($application['status']) == 'accepted'): ?>
+                                                <!-- Only show Cancel Job button when accepted -->
+                                                <button class="btn btn-danger btn-sm" 
+                                                        onclick="cancelJob(<?php echo $application['applications_id']; ?>)">
+                                                    Cancel Job
+                                                </button>
+                                            <?php elseif (strtolower($application['status']) == 'negotiation'): ?>
+                                                <!-- Show negotiation status and buttons -->
+                                                <div class="alert alert-info mb-2">
+                                                    Negotiation in progress
+                                                </div>
+                                                <div class="d-flex gap-2">
+                                                    <button class="btn btn-info btn-sm" 
+                                                            onclick="viewQuotation({quotationId: '<?php echo $application['quotations_id']; ?>', jobId: '<?php echo $application['jobId']; ?>'})">
+                                                        View Negotiation
+                                                    </button>
+                                                    <button class="btn btn-danger btn-sm" 
+                                                            onclick="cancelJob(<?php echo $application['applications_id']; ?>)">
+                                                        Cancel Job
+                                                    </button>
+                                                </div>
                                             <?php endif; ?>
                                         </div>
                                     </div>
@@ -1553,20 +1572,22 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
             window.location.href = `employer_view_quotation.php?quotation_id=${data.quotationId}&job_id=${data.jobId}`;
         }
 
-        function cancelJob(applicationId, quotationId) {
-            if (confirm('Are you sure you want to cancel this job? This will delete both the quotation and the application.')) {
+        function cancelJob(applicationId) {
+            if (confirm('Are you sure you want to cancel this job? This action cannot be undone.')) {
                 fetch('cancel_job.php', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
                     },
-                    body: `applicationId=${applicationId}&quotationId=${quotationId}`
+                    body: `applicationId=${applicationId}`
                 })
                 .then(response => response.text())
                 .then(data => {
-                    alert(data);
                     if (data.includes('success')) {
-                        window.location.reload();
+                        alert('Job cancelled successfully');
+                        location.reload();
+                    } else {
+                        alert(data);
                     }
                 })
                 .catch(error => {
@@ -1612,6 +1633,39 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
                     alert('Error rejecting proposal');
                 });
             }
+        }
+
+        function handleProposal(applicationId, action) {
+            const confirmMessage = action === 'accept' ? 
+                'Are you sure you want to accept this proposal?' :
+                'Are you sure you want to decline this proposal?';
+
+            if (!confirm(confirmMessage)) {
+                return;
+            }
+
+            fetch('handle_proposal.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `applicationId=${applicationId}&action=${action}`
+            })
+            .then(response => response.text())
+            .then(data => {
+                if (data.includes('success')) {
+                    alert(action === 'accept' ? 
+                        'Proposal accepted. Waiting for jobseeker counter offer.' : 
+                        'Proposal declined.');
+                    location.reload();
+                } else {
+                    alert('Error processing request: ' + data);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error processing request');
+            });
         }
     </script>
 

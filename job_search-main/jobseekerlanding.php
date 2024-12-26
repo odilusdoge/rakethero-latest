@@ -2,6 +2,33 @@
     include 'db_conn.php';
     session_start();
 
+    // Debug session
+    error_log("Session in jobseekerlanding.php: " . print_r($_SESSION, true));
+
+    // Check and fix userType if it's missing
+    if (!isset($_SESSION['userType']) || empty($_SESSION['userType'])) {
+        // Update the user's type in the database if it's not set
+        $userId = $_SESSION['user_id'];
+        $updateQuery = "UPDATE users SET userType = 'jobseeker' WHERE users_id = ?";
+        $stmt = $conn->prepare($updateQuery);
+        $stmt->bind_param("i", $userId);
+        $stmt->execute();
+        
+        // Set it in the session
+        $_SESSION['userType'] = 'jobseeker';
+    }
+
+    // Check if user is logged in and is a jobseeker
+    if (!isset($_SESSION['user_id']) || $_SESSION['userType'] !== 'jobseeker') {
+        error_log("Invalid session - User ID: " . (isset($_SESSION['user_id']) ? $_SESSION['user_id'] : 'not set') . 
+                  ", User Type: " . (isset($_SESSION['userType']) ? $_SESSION['userType'] : 'not set'));
+        header("Location: index.php");
+        exit();
+    }
+
+    // Ensure userType is set
+    $_SESSION['userType'] = 'jobseeker';
+
     // Debug session information
     error_log("Session data: " . print_r($_SESSION, true));
 
@@ -167,17 +194,45 @@
         ) latest ON q.quotations_id = latest.latest_quotation_id
     ) latest_q ON a.applications_id = latest_q.applications_id
     WHERE a.userid = ? 
-    AND a.status NOT IN ('Rejected')
-    AND NOT EXISTS (
-        SELECT 1 
-        FROM quotations q2 
-        WHERE q2.applications_id = a.applications_id 
-        AND q2.status = 'Accepted'
-    )
+    AND a.status NOT IN ('Rejected', 'Completed')
     ORDER BY a.applicationDate DESC";
 
     // Use prepared statement for security
     $stmt = $conn->prepare($applied_jobs_query);
+    $stmt->bind_param("i", $_SESSION['user_id']);
+    $stmt->execute();
+    $appliedJobs = $stmt->get_result();
+
+    if (!$appliedJobs) {
+        die("Error fetching applied jobs: " . $conn->error);
+    }
+
+    // Query to get all jobs applied to by the user
+    $query = "SELECT j.*, 
+              a.applications_id, 
+              a.status as application_status,
+              a.applicationDate,
+              q.quotations_id,
+              q.status as quotation_status,
+              q.jobseeker_approval,
+              q.employer_approval,
+              u.username as employer_name
+              FROM applications a
+              JOIN jobs j ON a.jobid = j.jobs_id
+              JOIN users u ON j.employerId = u.users_id
+              LEFT JOIN quotations q ON a.applications_id = q.applications_id
+              WHERE a.userId = ?
+              AND j.status != 'Completed'
+              AND a.status != 'Completed'
+              AND (
+                  q.status IS NULL OR 
+                  q.status = 'pending' OR 
+                  q.status = 'negotiation' OR
+                  (q.status = 'accepted' AND NOT (q.jobseeker_approval = 1 AND q.employer_approval = 1))
+              )
+              ORDER BY a.applicationDate DESC";
+
+    $stmt = $conn->prepare($query);
     $stmt->bind_param("i", $_SESSION['user_id']);
     $stmt->execute();
     $appliedJobs = $stmt->get_result();
@@ -759,7 +814,9 @@
                                     <p><strong>Job Type:</strong> <?php echo htmlspecialchars($job['jobType']); ?></p>
                                     <p><strong>Description:</strong> <?php echo htmlspecialchars($job['description']); ?></p>
                                     <div class="button-container">
-                                        <button class="btn btn-primary apply-btn">Apply Now</button>
+                                        <button class="btn btn-primary btn-sm apply-btn">
+                                            Apply Now
+                                        </button>
                                     </div>
                                 </div>
                             </div>
@@ -844,33 +901,39 @@
                                     </div>
                                 <?php endif; ?>
 
-                                <div class="button-container">
-                                    <?php if (isset($job['quotations_id'])): ?>
-                                        <button class="btn btn-primary btn-sm" onclick="viewQuotation(
-                                            '<?php echo addslashes($job['title']); ?>',
-                                            '<?php echo $job['quotations_id']; ?>',
-                                            '<?php echo number_format($job['price'], 2); ?>',
-                                            '<?php echo addslashes($job['quotation_description'] ?? 'No description provided'); ?>',
-                                            '<?php echo addslashes($job['quotation_status'] ?? 'Pending'); ?>',
-                                            '<?php echo $job['jobs_id']; ?>'
-                                        )">View Details</button>
-                                        <button class="btn btn-danger btn-sm delete-application" 
-                                                data-application-id="<?php echo htmlspecialchars($job['applications_id']); ?>">
-                                            Cancel Job
-                                        </button>
-                                    <?php else: ?>
-                                        <button class="btn btn-warning btn-sm edit-proposal" 
-                                                data-bs-toggle="modal" 
-                                                data-bs-target="#editProposalModal"
-                                                data-application-id="<?php echo htmlspecialchars($job['applications_id']); ?>"
-                                                data-proposal="<?php echo htmlspecialchars($job['proposal'] ?? ''); ?>">
-                                            Edit Proposal
-                                        </button>
-                                        <button class="btn btn-danger btn-sm delete-application" 
-                                                data-application-id="<?php echo htmlspecialchars($job['applications_id']); ?>">
-                                            Delete Application
-                                        </button>
+                                <div class="action-buttons">
+                                    <?php if (strtolower($job['application_status']) === 'accepted'): ?>
+                                        <!-- Show Send Quotation and Cancel Job buttons when proposal is accepted -->
+                                        <div class="d-flex gap-2">
+                                            <button class="btn btn-primary btn-sm" 
+                                                    onclick="sendQuotation('<?php echo $job['applications_id']; ?>', 
+                                                                        '<?php echo htmlspecialchars(addslashes($job['title'])); ?>', 
+                                                                        '<?php echo $job['jobs_id']; ?>')">
+                                                Send Quotation
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" 
+                                                    onclick="cancelJob(<?php echo $job['applications_id']; ?>)">
+                                                Cancel Job
+                                            </button>
+                                        </div>
+                                    <?php elseif (strtolower($job['application_status']) === 'negotiation'): ?>
+                                        <!-- Show View Negotiation button during negotiation -->
+                                        <div class="d-flex gap-2">
+                                            <button class="btn btn-info btn-sm" 
+                                                    onclick="viewQuotation('<?php echo $job['quotations_id']; ?>', '<?php echo $job['jobs_id']; ?>')">
+                                                View Negotiation
+                                            </button>
+                                            <button class="btn btn-danger btn-sm" 
+                                                    onclick="cancelJob(<?php echo $job['applications_id']; ?>)">
+                                                Cancel Job
+                                            </button>
+                                        </div>
                                     <?php endif; ?>
+
+                                    <!-- Add debug output temporarily -->
+                                    <div style="display:none">
+                                        Debug Status: <?php echo $job['application_status']; ?>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -978,6 +1041,7 @@
         <script src="vendors/is/is.min.js"></script>
         <script src="assets/js/theme.js"></script>
 
+        <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
         <script>
             document.addEventListener('DOMContentLoaded', function() {
                 // Job filtering function
@@ -1361,8 +1425,8 @@ setInterval(() => {
     });
 }, 30000); // Check every 30 seconds
 
-function viewQuotation(title, quotationId, price, description, status, jobId) {
-    // Redirect to the quotation details page
+function viewQuotation(quotationId, jobId) {
+    console.log('Redirecting to quotation view:', { quotationId, jobId });
     window.location.href = `view_quotation.php?quotation_id=${quotationId}&job_id=${jobId}`;
 }
 
@@ -1643,6 +1707,143 @@ document.addEventListener('DOMContentLoaded', function() {
     // Refresh jobs every 30 seconds
     setInterval(loadAvailableJobs, 30000);
 });
+
+function sendQuotation(applicationId, jobTitle, jobId) {
+    // First remove any existing modal
+    const existingModal = document.getElementById('sendQuotationModal');
+    if (existingModal) {
+        existingModal.remove();
+    }
+
+    // Create the modal HTML with PHP session data embedded
+    const modalHtml = `
+        <div class="modal fade" id="sendQuotationModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Send Quotation for ${jobTitle}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <input type="hidden" id="quotationUserId" value="<?php echo isset($_SESSION['user_id']) ? $_SESSION['user_id'] : ''; ?>">
+                        <input type="hidden" id="quotationUserType" value="jobseeker">
+                        <input type="hidden" id="applicationId" value="${applicationId}">
+                        <input type="hidden" id="jobId" value="${jobId}">
+                        <div class="mb-3">
+                            <label class="form-label">Amount (PHP)</label>
+                            <input type="number" class="form-control" id="quotationAmount" min="0" step="0.01" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Description</label>
+                            <textarea class="form-control" id="quotationDescription" rows="4" required
+                                      placeholder="Enter your quotation details"></textarea>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Valid Until</label>
+                            <input type="date" class="form-control" id="quotationValidUntil" required
+                                   min="${new Date().toISOString().split('T')[0]}">
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                        <button type="button" class="btn btn-primary" onclick="submitQuotation()">Send Quotation</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Add modal to document
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+    // Set minimum date to today
+    const today = new Date().toISOString().split('T')[0];
+    const validUntilInput = document.getElementById('quotationValidUntil');
+    if (validUntilInput) {
+        validUntilInput.min = today;
+        validUntilInput.value = today;
+        console.log('Initial date value:', validUntilInput.value);
+    }
+
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('sendQuotationModal'));
+    modal.show();
+}
+
+function submitQuotation() {
+    const modal = document.getElementById('sendQuotationModal');
+    if (!modal) {
+        console.error('Modal not found');
+        return;
+    }
+
+    const applicationId = modal.querySelector('#applicationId').value;
+    const jobId = modal.querySelector('#jobId').value;
+    const amount = modal.querySelector('#quotationAmount').value;
+    const description = modal.querySelector('#quotationDescription').value;
+    const validUntil = modal.querySelector('#quotationValidUntil').value;
+    const userType = modal.querySelector('#quotationUserType').value;
+    const userId = modal.querySelector('#quotationUserId').value;
+
+    // Debug log to check values
+    console.log('Form values:', {
+        applicationId,
+        jobId,
+        amount,
+        description,
+        validUntil,
+        userType,
+        userId
+    });
+
+    // Safely check values
+    const amountValue = parseFloat(amount);
+    const descriptionValue = description || '';
+    const validUntilValue = validUntil;
+
+    // Debug the date value
+    console.log('Valid Until Value:', validUntilValue);
+
+    // Check if any required fields are empty
+    if (isNaN(amountValue) || amountValue <= 0 || !descriptionValue.trim()) {
+        console.log('Form values before validation:', {
+            amount,
+            amountValue,
+            description,
+            descriptionValue
+        });
+        console.log('Missing fields:', {
+            amount: isNaN(amountValue) || amountValue <= 0,
+            description: !descriptionValue.trim(),
+        });
+        alert('Please fill in all fields');
+        return;
+    }
+
+    fetch('handle_negotiation.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `applicationId=${applicationId}&jobId=${jobId}&price=${amountValue}&description=${encodeURIComponent(descriptionValue)}&validUntil=${validUntilValue}&userType=${userType}&userId=${userId}`
+    })
+    .then(response => response.text())
+    .then(data => {
+        console.log('Server response:', data);
+        if (data.includes('success')) {
+            alert('Quotation sent successfully!');
+            const modal = bootstrap.Modal.getInstance(document.getElementById('sendQuotationModal'));
+            modal.hide();
+            location.reload();
+        } else {
+            alert(data);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('Error sending quotation');
+    });
+}
 
         </script>
     </body>

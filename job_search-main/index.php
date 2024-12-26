@@ -255,4 +255,43 @@ if (isset($_SESSION['error'])) {
     }
  
 </script>
+
+<script>
+document.getElementById('signupForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const username = document.getElementById('signupUsername').value;
+    const password = document.getElementById('signupPassword').value;
+    const userType = document.getElementById('userType').value;
+    
+    if (!userType) {
+        alert('Please select your user type');
+        return;
+    }
+
+    fetch('signup.php', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: `username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&userType=${encodeURIComponent(userType)}`
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert(data.message);
+            const modal = bootstrap.Modal.getInstance(document.getElementById('signupModal'));
+            modal.hide();
+            // Optionally redirect to login or clear form
+            document.getElementById('signupForm').reset();
+        } else {
+            alert(data.message);
+        }
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        alert('An error occurred during signup');
+    });
+});
+</script>
 </html>

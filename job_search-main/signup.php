@@ -7,8 +7,17 @@ header('Content-Type: application/json');
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $username = $_POST['username'];
-    $password = password_hash($_POST['password'], PASSWORD_DEFAULT);
+    $password = $_POST['password'];
     $userType = $_POST['userType'];
+
+    // Validate userType
+    if (!in_array($userType, ['employer', 'jobseeker'])) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Invalid user type selected'
+        ]);
+        exit;
+    }
 
     // Start transaction
     $conn->begin_transaction();
@@ -28,7 +37,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         // Insert into users table with correct userType
         $user_query = "INSERT INTO users (username, password, userType) VALUES (?, ?, ?)";
         $user_stmt = $conn->prepare($user_query);
-        $user_stmt->bind_param("sss", $username, $password, $userType);
+        $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+        $user_stmt->bind_param("sss", $username, $hashedPassword, $userType);
         
         if (!$user_stmt->execute()) {
             throw new Exception("Error creating user account");
@@ -44,6 +54,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         if (!$info_stmt->execute()) {
             throw new Exception("Error creating user info");
         }
+
+        // Set session variables after successful signup
+        $_SESSION['user_id'] = $user_id;
+        $_SESSION['username'] = $username;
+        $_SESSION['userType'] = $userType;
 
         // Commit transaction
         $conn->commit();

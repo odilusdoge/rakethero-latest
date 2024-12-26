@@ -270,11 +270,7 @@ $conn->close();
                                 </div>
                             </div>
 
-                            <!-- Overview -->
-                            <h6 class="text-start">Overview</h6>
-                            <p class="text-start" style="font-size: 0.95rem;">
-                                <?php echo $overview ?: 'No overview provided yet.'; ?>
-                            </p>
+                          
 
                             <!-- Reviews Section -->
                             <h6 class="text-start mt-4">Recent Reviews</h6>

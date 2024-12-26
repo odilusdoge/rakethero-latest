@@ -25,13 +25,16 @@ $query = "SELECT DISTINCT
         ELSE n.status
     END as status,
     n.created_at,
+    n.created_by,
     CASE 
         WHEN n.created_by = j.employerId THEN CONCAT(ui_emp.fname, ' ', ui_emp.lname)
-        ELSE CONCAT(ui_js.fname, ' ', ui_js.lname)
+        WHEN n.created_by = a.userId THEN CONCAT(ui_js.fname, ' ', ui_js.lname)
+        ELSE 'Unknown User'
     END as offered_by,
     CASE 
         WHEN n.created_by = j.employerId THEN 'Employer'
-        ELSE 'Jobseeker'
+        WHEN n.created_by = a.userId THEN 'Jobseeker'
+        ELSE 'Unknown'
     END as user_type
 FROM negotiations n
 JOIN quotations q ON n.quotation_id = q.quotations_id

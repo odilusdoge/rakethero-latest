@@ -2,15 +2,21 @@
 include 'db_conn.php';
 session_start();
 
+// Add debug logging for session
+error_log("Session contents: " . print_r($_SESSION, true));
+
 // Check if user is logged in
 if (!isset($_SESSION['user_id'])) {
+    error_log("No user_id in session");
     header("Location: index.php");
     exit();
 }
 
 // Define user type variables first
-$userType = $_SESSION['userType'];
-$isEmployer = ($userType === 'employer');
+$userType = 'jobseeker'; // This is always the jobseeker view
+error_log("User Type set to: " . $userType);
+
+$isEmployer = false; // This is always false in this view
 
 // Check if quotation ID is provided
 if (!isset($_GET['quotation_id']) || !isset($_GET['job_id'])) {
@@ -24,7 +30,17 @@ $jobId = $_GET['job_id'];
 // First define the query
 $query = "SELECT 
     q.*, 
+    COALESCE(
+        (SELECT n2.price 
+         FROM negotiations n2 
+         WHERE n2.quotation_id = q.quotations_id 
+         ORDER BY n2.created_at DESC 
+         LIMIT 1),
+        q.price
+    ) as current_price,
     q.valid_until,
+    q.jobseeker_approval,
+    q.employer_approval,
     a.proposal,
     a.applicationDate,
     a.status as application_status,
@@ -442,51 +458,46 @@ if (!$historyStmt) {
                     </pre>
                 </div>
 
+                <div class="alert alert-info" style="margin-bottom: 10px;">
+                    Debug Info:
+                    <ul>
+                        <li>Status: "<?php echo $quotation['status']; ?>"</li>
+                        <li>User Type: <?php echo $userType; ?></li>
+                        <li>Session User Type: <?php echo $_SESSION['userType']; ?></li>
+                        <li>Session User ID: <?php echo $_SESSION['user_id']; ?></li>
+                        <li>Is Pending: <?php echo ($quotation['status'] === 'pending' || $quotation['status'] === 'Pending') ? 'Yes' : 'No'; ?></li>
+                        <li>Is Negotiation: <?php echo ($quotation['status'] === 'negotiation' || $quotation['status'] === 'Negotiation') ? 'Yes' : 'No'; ?></li>
+                    </ul>
+                </div>
+
                 <div class="mt-4 d-flex gap-2">
-                    <?php if ($isEmployer): ?>
-                        <button type="button" 
-                                class="btn btn-success btn-sm" 
-                                onclick="handleQuotation('<?php echo $quotation['quotations_id']; ?>', 'accept', '<?php echo $jobId; ?>')"
-                                title="Accept Quotation"
-                                aria-label="Accept Quotation">
-                            <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Accept Counter Offer' : 'Accept Quotation'; ?>
+                    <?php if (strtolower($quotation['status']) === 'pending' || strtolower($quotation['status']) === 'negotiation'): ?>
+                        <!-- Accept button with approval check -->
+                        <?php if (!$quotation['jobseeker_approval']): ?>
+                            <button class="btn btn-success btn-sm" onclick="handleQuotation('accept')">
+                                Accept Quotation
+                            </button>
+                        <?php else: ?>
+                            <div class="alert alert-info">
+                                Waiting for employer's approval
+                            </div>
+                        <?php endif; ?>
+                        
+                        <!-- Always show Negotiate and Reject buttons -->
+                        <button class="btn btn-warning btn-sm" onclick="showNegotiateModal()">
+                            Negotiate
                         </button>
-                        <button type="button" 
-                                class="btn btn-warning btn-sm" 
-                                onclick="showNegotiateModal()"
-                                title="Make Counter Offer"
-                                aria-label="Make Counter Offer">
-                            <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Make Counter Offer' : 'Negotiate'; ?>
-                        </button>
-                        <button type="button" 
-                                class="btn btn-danger btn-sm" 
-                                onclick="handleQuotation('<?php echo $quotation['quotations_id']; ?>', 'reject', '<?php echo $jobId; ?>')"
-                                title="Reject Quotation"
-                                aria-label="Reject Quotation">
+                        <button class="btn btn-danger btn-sm" onclick="handleQuotation('reject')">
                             Reject
                         </button>
-                    <?php else: ?>
-                        <button type="button" 
-                                class="btn btn-success btn-sm" 
-                                onclick="handleQuotation('<?php echo $quotation['quotations_id']; ?>', 'accept', '<?php echo $jobId; ?>')"
-                                title="Accept Quotation"
-                                aria-label="Accept Quotation">
-                            <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Accept Counter Offer' : 'Accept Quotation'; ?>
-                        </button>
-                        <button type="button" 
-                                class="btn btn-warning btn-sm" 
-                                onclick="showNegotiateModal()"
-                                title="Make Counter Offer"
-                                aria-label="Make Counter Offer">
-                            <?php echo (strtolower($quotation['status']) === 'negotiation') ? 'Counter Offer' : 'Negotiate'; ?>
-                        </button>
-                        <button type="button" 
-                                class="btn btn-danger btn-sm" 
-                                onclick="handleQuotation('<?php echo $quotation['quotations_id']; ?>', 'reject', '<?php echo $jobId; ?>')"
-                                title="Reject Quotation"
-                                aria-label="Reject Quotation">
-                            Reject
-                        </button>
+                    <?php elseif (strtolower($quotation['status']) === 'accepted'): ?>
+                        <div class="alert alert-success">
+                            This quotation has been accepted by both parties.
+                        </div>
+                    <?php elseif (strtolower($quotation['status']) === 'rejected'): ?>
+                        <div class="alert alert-danger">
+                            This quotation has been rejected.
+                        </div>
                     <?php endif; ?>
                 </div>
             </div>
@@ -598,61 +609,33 @@ if (!$historyStmt) {
             window.location.href = 'jobseekerlanding.php';
         }
 
-        function handleQuotation(quotationId, action, jobId) {
-            const confirmMessage = action === 'accept' ? 
-                'Are you sure you want to accept this quotation? This will close the job.' :
-                'Are you sure you want to reject this quotation?';
-
-            if (confirm(confirmMessage)) {
-                fetch('handle_quotation_response.php', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                    },
-                    body: `quotationId=${quotationId}&action=${action}&jobId=${jobId}`
-                })
-                .then(response => response.text())
-                .then(data => {
-                    try {
-                        const result = JSON.parse(data);
-                        if (result.success) {
-                            if (action === 'accept') {
-                                const employerName = `<?php echo htmlspecialchars($quotation['employer_firstname'] . ' ' . $quotation['employer_lastname']); ?>`;
-                                const employerContact = `<?php echo htmlspecialchars($quotation['employer_contact']); ?>`;
-                                const employerEmail = `<?php echo htmlspecialchars($quotation['employer_email']); ?>`;
-                                const employerAddress = `<?php echo htmlspecialchars($quotation['employer_address']); ?>`;
-
-                                showEmployerContactModal(employerName, employerContact, employerEmail, employerAddress);
-                            } else {
-                                alert(result.message || 'Operation successful');
-                                window.location.href = 'jobseekerlanding.php';
-                            }
-                        } else {
-                            alert(result.message || 'Operation failed');
-                        }
-                    } catch (e) {
-                        if (data.includes('success')) {
-                            if (action === 'accept') {
-                                const employerName = `<?php echo htmlspecialchars($quotation['employer_firstname'] . ' ' . $quotation['employer_lastname']); ?>`;
-                                const employerContact = `<?php echo htmlspecialchars($quotation['employer_contact']); ?>`;
-                                const employerEmail = `<?php echo htmlspecialchars($quotation['employer_email']); ?>`;
-                                const employerAddress = `<?php echo htmlspecialchars($quotation['employer_address']); ?>`;
-
-                                showEmployerContactModal(employerName, employerContact, employerEmail, employerAddress);
-                            } else {
-                                alert('Operation successful');
-                                window.location.href = 'jobseekerlanding.php';
-                            }
-                        } else {
-                            alert(data);
-                        }
-                    }
-                })
-                .catch(error => {
-                    console.error('Error:', error);
-                    alert('Error processing request');
-                });
+        function handleQuotation(action) {
+            if (!confirm('Are you sure you want to ' + action + ' this quotation?')) {
+                return;
             }
+
+            // Debug log
+            console.log('User Type:', 'jobseeker');  // Always jobseeker in this view
+            console.log('Action:', action);
+
+            fetch('handle_quotation_response.php', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `quotationId=<?php echo $quotationId; ?>&action=${action}&jobId=<?php echo $jobId; ?>&userType=jobseeker`
+            })
+            .then(response => response.json())
+            .then(data => {
+                alert(data.message);
+                if (data.success) {
+                    window.location.reload();
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                alert('Error processing request');
+            });
         }
 
         function cancelJob(applicationId) {
@@ -681,10 +664,6 @@ if (!$historyStmt) {
         }
 
         function showNegotiateModal() {
-            // Set minimum date for validUntil to today
-            document.getElementById('quotationValidUntil').min = new Date().toISOString().split('T')[0];
-            document.getElementById('quotationValidUntil').value = new Date().toISOString().split('T')[0];
-            
             const modal = new bootstrap.Modal(document.getElementById('negotiateQuotationModal'));
             modal.show();
         }
