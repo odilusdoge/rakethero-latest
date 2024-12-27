@@ -13,15 +13,23 @@ $employerId = $_SESSION['user_id'];
 // Query to get all accepted jobs/quotations with jobseeker details
 $query = "SELECT DISTINCT
     t.transactions_id,
-    t.amount as quoted_price,
-    t.transaction_date as applicationDate,
+    COALESCE(t.amount, 
+        (SELECT n.price 
+         FROM negotiations n 
+         WHERE n.quotation_id = q.quotations_id 
+         ORDER BY n.created_at DESC 
+         LIMIT 1), 
+        q.price) as amount,
+    t.transaction_date,
     t.status as transaction_status,
+    t.duration,
     t.quotation_id,
     j.jobs_id as jobId,
     j.title as job_title,
     j.description as job_description,
     j.location as job_location,
     j.price as original_price,
+    j.status as job_status,
     u.username as jobseeker_username,
     u.users_id as jobseeker_id,
     ui.fname as jobseeker_firstname,
@@ -33,21 +41,30 @@ $query = "SELECT DISTINCT
     q.quotations_id,
     q.description as quotation_description
 FROM 
-    transactions t
+    jobs j
 JOIN 
-    jobs j ON t.jobId = j.jobs_id
+    applications a ON j.jobs_id = a.jobid
 JOIN 
-    users u ON t.jobseeker_id = u.users_id
+    quotations q ON a.applications_id = q.applications_id
 LEFT JOIN 
-    user_info ui ON t.jobseeker_id = ui.userid
+    transactions t ON j.jobs_id = t.jobId
 JOIN 
-    quotations q ON t.quotation_id = q.quotations_id
-JOIN 
-    applications a ON q.applications_id = a.applications_id
+    users u ON a.userId = u.users_id
+LEFT JOIN 
+    user_info ui ON a.userId = ui.userid
 WHERE 
-    t.employerId = ?
+    j.employerId = ?
+    AND j.status = 'Closed'
+    AND q.status = 'accepted'
+    AND q.jobseeker_approval = 1
+    AND q.employer_approval = 1
 ORDER BY 
     t.transaction_date DESC";
+
+// Debug logging
+error_log("Employer ID for transactions: " . $employerId);
+$debug_query = str_replace('?', $employerId, $query);
+error_log("Transaction Query: " . $debug_query);
 
 // Add error logging
 error_log("Preparing query for employer ID: " . $employerId);
@@ -201,13 +218,15 @@ $result = $stmt->get_result();
                         <div class="transaction-header">
                             <div class="transaction-title"><?php echo htmlspecialchars($transaction['job_title']); ?></div>
                             <div class="transaction-date">
-                                Accepted on: <?php echo date('F j, Y', strtotime($transaction['applicationDate'])); ?>
+                                Accepted on: <?php echo date('F j, Y', strtotime($transaction['transaction_date'])); ?>
+                                <span class="badge bg-success ms-2">Closed</span>
                             </div>
                         </div>
 
                         <div class="transaction-details">
                             <p><span class="detail-label">Original Price:</span> PHP <?php echo number_format($transaction['original_price'], 2); ?></p>
-                            <p><span class="detail-label">Accepted Price:</span> PHP <?php echo number_format($transaction['quoted_price'], 2); ?></p>
+                            <p><span class="detail-label">Final Amount:</span> PHP <?php echo number_format($transaction['amount'], 2); ?></p>
+                            <p><span class="detail-label">Duration:</span> <?php echo htmlspecialchars($transaction['duration']); ?></p>
                             <p><span class="detail-label">Job Location:</span> <?php echo htmlspecialchars($transaction['job_location']); ?></p>
                             
                             <div class="jobseeker-info">

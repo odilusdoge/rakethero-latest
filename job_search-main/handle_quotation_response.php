@@ -96,6 +96,51 @@ try {
             $stmt->bind_param("i", $quotationId);
             $stmt->execute();
 
+            // Get necessary information for transaction
+            $getInfoQuery = "SELECT 
+                j.jobs_id, 
+                j.employerId,
+                a.userId as jobseeker_id,
+                j.duration,
+                COALESCE(
+                    (SELECT n.price 
+                     FROM negotiations n 
+                     WHERE n.quotation_id = q.quotations_id 
+                     ORDER BY n.created_at DESC 
+                     LIMIT 1),
+                    q.price
+                ) as final_amount
+                FROM quotations q
+                JOIN applications a ON q.applications_id = a.applications_id
+                JOIN jobs j ON a.jobid = j.jobs_id
+                WHERE q.quotations_id = ?";
+            
+            $stmt = $conn->prepare($getInfoQuery);
+            $stmt->bind_param("i", $quotationId);
+            $stmt->execute();
+            $jobInfo = $stmt->get_result()->fetch_assoc();
+
+            // Insert into transactions
+            $insertTransactionQuery = "INSERT INTO transactions 
+                (employerId, jobId, duration, status, quotation_id, jobseeker_id, amount, transaction_date) 
+                VALUES (?, ?, ?, 'completed', ?, ?, ?, NOW())";
+            $stmt = $conn->prepare($insertTransactionQuery);
+            error_log("Inserting transaction with data: " . print_r($jobInfo, true));
+            $stmt->bind_param("iisidi", 
+                $jobInfo['employerId'],
+                $jobInfo['jobs_id'],
+                $jobInfo['duration'],
+                $quotationId,
+                $jobInfo['jobseeker_id'],
+                $jobInfo['final_amount']
+            );
+            if (!$stmt->execute()) {
+                error_log("Error inserting transaction: " . $stmt->error);
+                throw new Exception("Error creating transaction record");
+            }
+            $transactionId = $conn->insert_id;
+            error_log("Created transaction with ID: " . $transactionId);
+
             $message = "Both parties have accepted the quotation. The job has been finalized.";
         } else {
             $message = "Your acceptance has been recorded. Waiting for the other party's approval.";

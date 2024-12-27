@@ -80,7 +80,10 @@ $historyQuery = "SELECT DISTINCT
     CASE 
         WHEN n.created_by = j.employerId THEN 'Employer'
         ELSE 'Jobseeker'
-    END as user_type
+    END as user_type,
+    q.jobseeker_approval,
+    q.employer_approval,
+    q.status as quotation_status
 FROM negotiations n
 JOIN quotations q ON n.quotation_id = q.quotations_id
 JOIN applications a ON q.applications_id = a.applications_id
@@ -331,6 +334,20 @@ if (!$historyStmt) {
                                                     <strong>Valid Until:</strong> 
                                                     <?php echo date('M j, Y', strtotime($history['valid_until'])); ?>
                                                 </p>
+                                                <p class="mb-1">
+                                                    <strong>Status:</strong>
+                                                    <?php if ($history['quotation_status'] === 'accepted'): ?>
+                                                        <span class="status-badge accepted">Accepted by both parties</span>
+                                                    <?php elseif ($history['jobseeker_approval'] && !$history['employer_approval']): ?>
+                                                        <span class="status-badge pending">Accepted by Jobseeker</span>
+                                                    <?php elseif (!$history['jobseeker_approval'] && $history['employer_approval']): ?>
+                                                        <span class="status-badge pending">Accepted by Employer</span>
+                                                    <?php else: ?>
+                                                        <span class="status-badge <?php echo strtolower($history['status']); ?>">
+                                                            <?php echo htmlspecialchars($history['status']); ?>
+                                                        </span>
+                                                    <?php endif; ?>
+                                                </p>
                                                 <?php if (!empty($history['description'])): ?>
                                                     <p class="mb-0">
                                                         <strong>Message:</strong><br>
@@ -440,12 +457,12 @@ if (!$historyStmt) {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
                 },
-                body: `quotationId=<?php echo $quotationId; ?>&action=${action}&jobId=<?php echo $jobId; ?>`
+                body: `quotationId=<?php echo $quotationId; ?>&action=${action}&jobId=<?php echo $jobId; ?>&userType=employer`
             })
-            .then(response => response.text())
+            .then(response => response.json())
             .then(data => {
-                alert(data);
-                if (data.includes('success')) {
+                alert(data.message);
+                if (data.success) {
                     window.location.href = 'employerlanding.php';
                 }
             })

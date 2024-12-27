@@ -120,6 +120,7 @@ if ($hasProfile) {
                 'title' => htmlspecialchars($row['title']),
                 'description' => htmlspecialchars($row['description']),
                 'price' => htmlspecialchars($row['price']),
+                'payType' => htmlspecialchars($row['payType']),
                 'status' => htmlspecialchars($row['status']),
                 'created_at' => $row['postedDate'],
                 'job_rating' => round($row['job_rating'], 1),
@@ -201,6 +202,32 @@ $conn->close();
         body {
             background-color: #f8f9fa;
             margin: 0;
+        }
+
+        /* Table styles */
+        .table {
+            font-size: 0.9rem;
+            margin-top: 1rem;
+        }
+        
+        .table th {
+            font-weight: 600;
+            background-color: #f8f9fa;
+        }
+        
+        .table td {
+            vertical-align: middle;
+        }
+        
+        .badge {
+            font-weight: 500;
+            padding: 0.5em 0.8em;
+        }
+        
+        .table-responsive {
+            margin: 1rem 0;
+            border-radius: 0.5rem;
+            box-shadow: 0 0 10px rgba(0,0,0,0.05);
         }
     </style>
 </head>
@@ -293,6 +320,55 @@ $conn->close();
                                 </div>
                             <?php else: ?>
                                 <p class="text-muted">No reviews yet</p>
+                            <?php endif; ?>
+
+                            <!-- Recent Jobs Section -->
+                            <h6 class="text-start mt-4">Recent Jobs Posted</h6>
+                            <?php if (!empty($posted_jobs)): ?>
+                                <div class="table-responsive">
+                                    <table class="table table-hover">
+                                        <thead>
+                                            <tr>
+                                                <th>Job Title</th>
+                                                <th>Offer</th>
+                                                <th>Posted Date</th>
+                                                <th>Status</th>
+                                                <th>Applications</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <?php foreach ($posted_jobs as $job): ?>
+                                                <tr>
+                                                    <td><?php echo $job['title']; ?></td>
+                                                    <td>PHP <?php echo number_format($job['price'], 2); ?> 
+                                                        <small class="text-muted">/<?php echo $job['payType']; ?></small>
+                                                    </td>
+                                                    <td><?php echo date('M d, Y', strtotime($job['created_at'])); ?></td>
+                                                    <td>
+                                                        <span class="badge bg-<?php 
+                                                            echo match($job['status']) {
+                                                                'Open' => 'success',
+                                                                'Closed' => 'secondary',
+                                                                'In Progress' => 'warning',
+                                                                default => 'info'
+                                                            };
+                                                        ?>">
+                                                            <?php echo $job['status']; ?>
+                                                        </span>
+                                                    </td>
+                                                    <td>
+                                                        <span class="badge bg-info">
+                                                            <?php echo $job['application_count']; ?> 
+                                                            <?php echo $job['application_count'] == 1 ? 'application' : 'applications'; ?>
+                                                        </span>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            <?php else: ?>
+                                <p class="text-muted">No jobs posted yet</p>
                             <?php endif; ?>
 
                             <!-- Edit Profile Button -->

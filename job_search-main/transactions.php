@@ -13,15 +13,23 @@ $userId = $_SESSION['user_id'];
 // Update the main transaction query
 $query = "SELECT DISTINCT
     t.transactions_id,
-    t.amount as quoted_price,
-    t.transaction_date as applicationDate,
+    COALESCE(t.amount, 
+        (SELECT n.price 
+         FROM negotiations n 
+         WHERE n.quotation_id = q.quotations_id 
+         ORDER BY n.created_at DESC 
+         LIMIT 1), 
+        q.price) as amount,
+    t.transaction_date,
     t.status as transaction_status,
+    t.duration,
     t.quotation_id,
     j.jobs_id as jobId,
     j.title as job_title,
     j.description as job_description,
     j.location as job_location,
     j.price as original_price,
+    j.status as job_status,
     j.employerId,
     u.username as employer_name,
     ui.fname as employer_firstname,
@@ -32,29 +40,30 @@ $query = "SELECT DISTINCT
     q.quotations_id,
     q.description as quotation_description
 FROM 
-    transactions t
+    jobs j
 JOIN 
-    jobs j ON t.jobId = j.jobs_id
+    applications a ON j.jobs_id = a.jobid
 JOIN 
-    users u ON t.employerId = u.users_id
+    quotations q ON a.applications_id = q.applications_id
 LEFT JOIN 
-    user_info ui ON t.employerId = ui.userid
+    transactions t ON j.jobs_id = t.jobId
 JOIN 
-    quotations q ON t.quotation_id = q.quotations_id
+    users u ON j.employerId = u.users_id
+LEFT JOIN 
+    user_info ui ON j.employerId = ui.userid
 WHERE 
-    t.jobseeker_id = ?
-    AND t.quotation_id = (
-        SELECT MAX(quotation_id)
-        FROM transactions t2
-        WHERE t2.jobId = t.jobId
-        AND t2.jobseeker_id = t.jobseeker_id
-    )
+    a.userId = ?
+    AND j.status = 'Closed'
+    AND q.status = 'accepted'
+    AND q.jobseeker_approval = 1
+    AND q.employer_approval = 1
 ORDER BY 
     t.transaction_date DESC";
 
-// Debug the query
-error_log("Transaction Query: " . $query);
-error_log("User ID: " . $_SESSION['user_id']);
+// Debug logging
+error_log("Jobseeker ID for transactions: " . $_SESSION['user_id']);
+$debug_query = str_replace('?', $_SESSION['user_id'], $query);
+error_log("Transaction Query: " . $debug_query);
 
 // Prepare and execute
 $stmt = $conn->prepare($query);
@@ -196,6 +205,24 @@ error_log("Number of rows returned: " . $result->num_rows);
             padding-bottom: 0.5rem;
             border-bottom: 2px solid #eee;
         }
+
+        .stars i {
+            cursor: pointer;
+            padding: 0.2rem;
+        }
+        
+        .stars i:hover {
+            transform: scale(1.2);
+            transition: transform 0.2s;
+        }
+        
+        .bi-star-fill.text-warning {
+            color: #FFD700 !important;
+        }
+        
+        .stars i:hover ~ i {
+            color: inherit !important;
+        }
     </style>
 </head>
 <body>
@@ -217,13 +244,15 @@ error_log("Number of rows returned: " . $result->num_rows);
                         <div class="transaction-header">
                             <div class="transaction-title"><?php echo htmlspecialchars($transaction['job_title']); ?></div>
                             <div class="transaction-date">
-                                Accepted on: <?php echo date('F j, Y', strtotime($transaction['applicationDate'])); ?>
+                                Accepted on: <?php echo date('F j, Y', strtotime($transaction['transaction_date'])); ?>
+                                <span class="badge bg-success ms-2">Closed</span>
                             </div>
                         </div>
 
                         <div class="transaction-details">
                             <p><span class="detail-label">Original Price:</span> PHP <?php echo number_format($transaction['original_price'], 2); ?></p>
-                            <p><span class="detail-label">Quoted Price:</span> PHP <?php echo number_format($transaction['quoted_price'], 2); ?></p>
+                            <p><span class="detail-label">Final Amount:</span> PHP <?php echo number_format($transaction['amount'], 2); ?></p>
+                            <p><span class="detail-label">Duration:</span> <?php echo htmlspecialchars($transaction['duration']); ?></p>
                             <p><span class="detail-label">Location:</span> <?php echo htmlspecialchars($transaction['job_location']); ?></p>
                             
                             <div class="employer-info">
@@ -321,12 +350,13 @@ error_log("Number of rows returned: " . $result->num_rows);
                             <?php else: ?>
                                 <div class="rate-employer">
                                     <h5 class="mb-3">Rate this Employer</h5>
+                                    <?php if (!empty($transaction['transactions_id'])): ?>
                                     <div class="stars mb-3" id="employer-stars-<?php echo $transaction['transactions_id']; ?>">
                                         <?php for ($i = 1; $i <= 5; $i++): ?>
                                             <i class="bi bi-star employer-rating-star-<?php echo $transaction['transactions_id']; ?>" 
                                                data-rating="<?php echo $i; ?>" 
                                                data-transaction="<?php echo $transaction['transactions_id']; ?>"
-                                               onclick="setEmployerRating(this, <?php echo $transaction['transactions_id']; ?>)" 
+                                               onclick="setEmployerRating(this, '<?php echo $transaction['transactions_id']; ?>')"
                                                style="cursor: pointer;"></i>
                                         <?php endfor; ?>
                                     </div>
@@ -335,9 +365,14 @@ error_log("Number of rows returned: " . $result->num_rows);
                                             placeholder="Write your feedback about the employer..." rows="3"></textarea>
                                     </div>
                                     <button class="btn btn-primary" 
-                                        onclick="submitEmployerRating(<?php echo $transaction['transactions_id']; ?>, <?php echo $transaction['employerId']; ?>)">
+                                        onclick="submitEmployerRating('<?php echo $transaction['transactions_id']; ?>', '<?php echo $transaction['employerId']; ?>')">
                                         Rate Employer
                                     </button>
+                                    <?php else: ?>
+                                        <div class="alert alert-warning">
+                                            Transaction record not found. Please contact support.
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
                             <?php endif; ?>
                         </div>
@@ -386,7 +421,59 @@ error_log("Number of rows returned: " . $result->num_rows);
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
 
     <script>
+    // Initialize rating objects
     const ratings = {};
+    const employerRatings = {};
+
+    // Function to set employer rating
+    function setEmployerRating(star, transactionId) {
+        const rating = parseInt(star.dataset.rating);
+        employerRatings[transactionId] = rating;
+        
+        // Update all stars for this specific transaction
+        const stars = document.querySelectorAll(`.employer-rating-star-${transactionId}`);
+        
+        stars.forEach((s, index) => {
+            if (index < rating) {
+                s.classList.remove('bi-star');
+                s.classList.add('bi-star-fill', 'text-warning');
+            } else {
+                s.classList.remove('bi-star-fill', 'text-warning');
+                s.classList.add('bi-star');
+            }
+        });
+    }
+
+    // Function to submit employer rating
+    function submitEmployerRating(transactionId, employerId) {
+        if (!employerRatings[transactionId]) {
+            alert('Please select a rating');
+            return;
+        }
+
+        const feedback = document.getElementById(`employer-feedback-${transactionId}`).value;
+
+        fetch('submit_employer_rating.php', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: `transactionId=${transactionId}&employerId=${employerId}&rating=${employerRatings[transactionId]}&comment=${encodeURIComponent(feedback)}`
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Thank you for rating the employer!');
+                location.reload();
+            } else {
+                alert(data.message || 'Error submitting rating');
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error submitting rating');
+        });
+    }
 
     function setRating(star, quotationId) {
         const rating = parseInt(star.dataset.rating);
@@ -428,55 +515,6 @@ error_log("Number of rows returned: " . $result->num_rows);
         .then(data => {
             if (data.success) {
                 alert('Thank you for your rating!');
-                location.reload();
-            } else {
-                alert(data.message || 'Error submitting rating');
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            alert('Error submitting rating');
-        });
-    }
-
-    const employerRatings = {};
-
-    function setEmployerRating(star, transactionId) {
-        const rating = parseInt(star.dataset.rating);
-        employerRatings[transactionId] = rating;
-        
-        const stars = document.getElementsByClassName(`employer-rating-star-${transactionId}`);
-        
-        Array.from(stars).forEach((s, index) => {
-            if (index < rating) {
-                s.classList.remove('bi-star');
-                s.classList.add('bi-star-fill', 'text-warning');
-            } else {
-                s.classList.remove('bi-star-fill', 'text-warning');
-                s.classList.add('bi-star');
-            }
-        });
-    }
-
-    function submitEmployerRating(transactionId, employerId) {
-        if (!employerRatings[transactionId]) {
-            alert('Please select a rating');
-            return;
-        }
-
-        const feedback = document.getElementById(`employer-feedback-${transactionId}`).value;
-
-        fetch('submit_employer_rating.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: `transactionId=${transactionId}&employerId=${employerId}&rating=${employerRatings[transactionId]}&comment=${encodeURIComponent(feedback)}`
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert('Thank you for rating the employer!');
                 location.reload();
             } else {
                 alert(data.message || 'Error submitting rating');
