@@ -297,6 +297,7 @@ WHERE j.employerId = ?
         WHERE q3.applications_id = a.applications_id 
         AND q3.status = 'Accepted'
     )
+    AND (a.status IS NULL OR a.status != 'rejected')
     AND (a.status IS NULL OR a.status != 'Completed')
 GROUP BY a.applications_id
 ORDER BY a.applicationDate DESC";
@@ -329,114 +330,42 @@ while ($row = $applications->fetch_assoc()) {
 // Reset pointer for PHP usage
 $applications->data_seek(0);
 
-// Add this function after your existing PHP functions, before the HTML
-function rejectProposal($applicationId) {
-    global $conn;
+// Add this code block to handle AJAX requests
+if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
+    // Prevent any output before headers
+    ob_clean();
+    error_log("Rejecting proposal for application ID: " . $_POST['applicationId']);
+    $applicationId = $_POST['applicationId'];
     
     // Start transaction
     $conn->begin_transaction();
     
     try {
-        // Get job ID and user ID first
-        $getInfoStmt = $conn->prepare("
-            SELECT a.jobId, a.userId, j.employerId 
-            FROM applications a
-            JOIN jobs j ON a.jobId = j.jobs_id
-            WHERE a.applications_id = ?
-        ");
-        $getInfoStmt->bind_param("i", $applicationId);
-        $getInfoStmt->execute();
-        $result = $getInfoStmt->get_result();
-        $info = $result->fetch_assoc();
+        // First, delete any quotations
+        $stmt = $conn->prepare("DELETE FROM quotations WHERE applications_id = ?");
+        $stmt->bind_param("i", $applicationId);
+        $stmt->execute();
         
-        if (!$info) {
-            throw new Exception('Application not found');
-        }
-
-        // First delete all related notifications
-        $deleteNotifStmt = $conn->prepare("
-            DELETE FROM notifications 
-            WHERE job_id = ? 
-            AND (
-                (user_id = ? AND from_user_id = ?) 
-                OR 
-                (user_id = ? AND from_user_id = ?)
-            )
-        ");
-        $deleteNotifStmt->bind_param("iiiii", 
-            $info['jobId'],
-            $info['userId'], 
-            $info['employerId'],
-            $info['employerId'],
-            $info['userId']
-        );
-        $deleteNotifStmt->execute();
-
-        // Delete any associated quotations
-        $deleteQuotationStmt = $conn->prepare("
-            DELETE FROM quotations 
-            WHERE applications_id = ?
-        ");
-        $deleteQuotationStmt->bind_param("i", $applicationId);
-        $deleteQuotationStmt->execute();
-
-        // Delete the application
-        $deleteAppStmt = $conn->prepare("
-            DELETE FROM applications 
-            WHERE applications_id = ?
-        ");
-        $deleteAppStmt->bind_param("i", $applicationId);
-        $deleteAppStmt->execute();
-
-        // Update job status back to 'Open' and set is_onlyavailable to TRUE
-        $updateJobStmt = $conn->prepare("
-            UPDATE jobs 
-            SET status = 'Open',
-                is_onlyavailable = TRUE 
-            WHERE jobs_id = ?
-        ");
-        $updateJobStmt->bind_param("i", $info['jobId']);
-        $updateJobStmt->execute();
-
-        // Add a new rejection notification
-        $message = "Your application has been rejected";
-        $addNotifStmt = $conn->prepare("
-            INSERT INTO notifications (user_id, from_user_id, type, message, job_id, created_at) 
-            VALUES (?, ?, 'rejection', ?, ?, NOW())
-        ");
-        $addNotifStmt->bind_param("iisi", 
-            $info['userId'], 
-            $info['employerId'], 
-            $message, 
-            $info['jobId']
-        );
-        $addNotifStmt->execute();
+        // Then, delete the application
+        $stmt = $conn->prepare("DELETE FROM applications WHERE applications_id = ?");
+        $stmt->bind_param("i", $applicationId);
+        $stmt->execute();
         
+        // Commit the transaction
         $conn->commit();
-        return true;
+        
+        error_log("Successfully deleted application ID: " . $applicationId);
+        header('Content-Type: application/json');
+        header("Cache-Control: no-cache, must-revalidate");
+        echo json_encode(['success' => true]);
     } catch (Exception $e) {
         $conn->rollback();
-        error_log("Error in rejectProposal: " . $e->getMessage());
-        return false;
-    } finally {
-        // Close all prepared statements
-        if (isset($getInfoStmt)) $getInfoStmt->close();
-        if (isset($deleteNotifStmt)) $deleteNotifStmt->close();
-        if (isset($deleteQuotationStmt)) $deleteQuotationStmt->close();
-        if (isset($deleteAppStmt)) $deleteAppStmt->close();
-        if (isset($updateJobStmt)) $updateJobStmt->close();
-        if (isset($addNotifStmt)) $addNotifStmt->close();
+        error_log("Error deleting application: " . $e->getMessage());
+        header('Content-Type: application/json');
+        header("Cache-Control: no-cache, must-revalidate");
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }
-}
-
-// Add this code block to handle AJAX requests
-if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
-    $applicationId = $_POST['applicationId'];
-    $result = rejectProposal($applicationId);
-    
-    header('Content-Type: application/json');
-    echo json_encode(['success' => $result]);
-    exit;
+    exit();
 }
 
 // Add this query where you fetch the jobseeker's details
@@ -1011,7 +940,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
                                                     Accept Proposal
                                                 </button>
                                                 <button class="btn btn-danger btn-sm" 
-                                                        onclick="handleProposal(<?php echo $application['applications_id']; ?>, 'decline')">
+                                                        onclick="rejectProposal('<?php echo $application['applications_id']; ?>')">
                                                     Decline Proposal
                                                 </button>
                                             <?php elseif (strtolower($application['status']) == 'accepted'): ?>
@@ -1610,27 +1539,33 @@ if (isset($_POST['action']) && $_POST['action'] === 'rejectProposal') {
         }
 
         // Add this function to your existing JavaScript code
-        function rejectProposal($applicationId) {
-            if (confirm('Are you sure you want to reject this proposal? The job will be made available again.')) {
+        function rejectProposal(applicationId) {
+            if (confirm('Are you sure you want to decline this proposal?')) {
                 fetch('employerlanding.php', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
+                        'Accept': 'application/json'
                     },
-                    body: `action=rejectProposal&applicationId=${applicationId}`
+                    body: 'action=rejectProposal&applicationId=' + applicationId
                 })
-                .then(response => response.json())
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     if (data.success) {
-                        alert('Proposal rejected successfully. The job is now available again.');
+                        alert('Proposal declined successfully');
                         window.location.reload();
                     } else {
-                        alert('Error rejecting proposal. Please try again.');
+                        alert(data.message || 'Error declining proposal');
                     }
                 })
                 .catch(error => {
                     console.error('Error:', error);
-                    alert('Error rejecting proposal');
+                    alert('Error declining proposal: ' + error.message);
                 });
             }
         }
